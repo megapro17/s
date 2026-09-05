@@ -66,15 +66,12 @@ KEYS_MATCH=0
 
 if [[ -f "$AUTHORIZED_KEYS" ]] &&
    [[ "$(cat "$AUTHORIZED_KEYS")" == "$KEYS" ]]; then
+
     echo "ℹ️ Ключи не изменились."
+
 else
     printf '%s\n' "$KEYS" > "$AUTHORIZED_KEYS"
     echo "✅ Ключи обновлены."
-fi
-
-if [[ "$KEYS_MATCH" -eq 0 ]]; then
-    printf '%s\n' "$KEYS" > "$AUTHORIZED_KEYS"
-    echo "✅ authorized_keys обновлён."
 fi
 
 # Проверяем права/владельца только после этого.
