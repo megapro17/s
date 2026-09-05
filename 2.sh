@@ -1,4 +1,3 @@
-```bash
 #!/bin/bash
 
 set -e
@@ -76,4 +75,3 @@ if [ "$DESIRED_CONF" != "$CURRENT_CONF" ]; then
 else
     echo "ℹ️ Конфигурация SSH актуальна. Запись пропущена."
 fi
-```
