@@ -62,20 +62,15 @@ fi
 # ==========================================
 # 3. Проверяем authorized_keys
 # ==========================================
-KEYS_MATCH=0
-
 if [[ -f "$AUTHORIZED_KEYS" ]] &&
    [[ "$(cat "$AUTHORIZED_KEYS")" == "$KEYS" ]]; then
-
     echo "ℹ️ Ключи не изменились."
-
 else
     printf '%s\n' "$KEYS" > "$AUTHORIZED_KEYS"
     echo "✅ Ключи обновлены."
 fi
 
-# Проверяем права/владельца только после этого.
-# Если файл только что создан через sudo, здесь они могут быть root/root.
+# Проверяем права/владельца только при необходимости
 AK_MODE="$(stat -c '%a' "$AUTHORIZED_KEYS")"
 AK_OWNER="$(stat -c '%U' "$AUTHORIZED_KEYS")"
 AK_GROUP="$(stat -c '%G' "$AUTHORIZED_KEYS")"
@@ -121,4 +116,19 @@ if [[ "$DESIRED_CONF" != "$CURRENT_CONF" ]]; then
     echo "🔄 Перезапустите SSH сервер."
 else
     echo "ℹ️ Конфигурация SSH не изменилась."
+fi
+
+# Проверяем права/владельца конфигурации только при необходимости
+CONF_MODE="$(stat -c '%a' "$CONF_FILE")"
+CONF_OWNER="$(stat -c '%U' "$CONF_FILE")"
+CONF_GROUP="$(stat -c '%G' "$CONF_FILE")"
+
+if [[ "$CONF_MODE" != "600" ]]; then
+    chmod 600 "$CONF_FILE"
+    echo "✅ Исправлены права $CONF_FILE"
+fi
+
+if [[ "$CONF_OWNER" != "root" || "$CONF_GROUP" != "root" ]]; then
+    chown root:root "$CONF_FILE"
+    echo "✅ Исправлен владелец $CONF_FILE"
 fi
