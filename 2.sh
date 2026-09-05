@@ -1,21 +1,46 @@
+```bash
 #!/bin/bash
+
+set -e
+
+# ==========================================
+# Определяем целевого пользователя
+# ==========================================
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    TARGET_USER="$SUDO_USER"
+else
+    TARGET_USER="$(id -un)"
+fi
+
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+
+if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
+    echo "❌ Не удалось определить домашний каталог пользователя: $TARGET_USER"
+    exit 1
+fi
+
+SSH_DIR="$TARGET_HOME/.ssh"
+AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
 
 # ==========================================
 # 1. ОБНОВЛЕНИЕ КЛЮЧЕЙ
 # ==========================================
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-touch ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+touch "$AUTHORIZED_KEYS"
+chmod 600 "$AUTHORIZED_KEYS"
 
 KEYS=$(curl -fsSL https://github.com/megapro17.keys)
 
 if [ -n "$KEYS" ]; then
-    if [ "$KEYS" != "$(cat ~/.ssh/authorized_keys)" ]; then
-        printf "%s\n" "$KEYS" > ~/.ssh/authorized_keys
-        echo "✅ Ключи успешно обновлены."
-    else
+    if printf "%s\n" "$KEYS" | cmp -s - "$AUTHORIZED_KEYS"; then
         echo "ℹ️ Ключи не изменились. Запись пропущена."
+    else
+        printf "%s\n" "$KEYS" > "$AUTHORIZED_KEYS"
+        chown "$TARGET_USER:$TARGET_USER" "$AUTHORIZED_KEYS"
+        chown "$TARGET_USER:$TARGET_USER" "$SSH_DIR"
+        echo "✅ Ключи успешно обновлены для пользователя: $TARGET_USER"
     fi
 else
     echo "❌ Ошибка: не удалось скачать ключи."
@@ -23,12 +48,11 @@ else
 fi
 
 # ==========================================
-# 2. НАСТРОЙКА SSH (С ПРОВЕРКОЙ СОДЕРЖИМОГО)
+# 2. НАСТРОЙКА SSH
 # ==========================================
 CONF_DIR="${PREFIX:-}/etc/ssh/sshd_config.d"
 CONF_FILE="$CONF_DIR/01-keys-only.conf"
 
-# Сохраняем нужный нам эталонный конфиг в переменную в памяти
 DESIRED_CONF=$(cat << 'EOF'
 # Отключаем все типы авторизации, кроме публичных ключей
 PubkeyAuthentication yes
@@ -40,17 +64,16 @@ EOF
 
 mkdir -p "$CONF_DIR"
 
-# Читаем текущий конфиг с диска (если он существует), иначе оставляем пустым
 CURRENT_CONF=""
 if [ -f "$CONF_FILE" ]; then
     CURRENT_CONF=$(cat "$CONF_FILE")
 fi
 
-# Сравниваем эталон с тем, что сейчас в файле
 if [ "$DESIRED_CONF" != "$CURRENT_CONF" ]; then
     printf "%s\n" "$DESIRED_CONF" > "$CONF_FILE"
     echo "✅ Конфигурация SSH обновлена: $CONF_FILE"
-    echo "🔄 Не забудьте перезапустить SSH сервер (например: systemctl restart ssh)."
+    echo "🔄 Не забудьте перезапустить SSH сервер."
 else
     echo "ℹ️ Конфигурация SSH актуальна. Запись пропущена."
 fi
+```
