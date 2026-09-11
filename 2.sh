@@ -92,7 +92,7 @@ CONF_DIR="${PREFIX:-}/etc/ssh/sshd_config.d"
 CONF_FILE="$CONF_DIR/01-keys-only.conf"
 
 DESIRED_CONF=$(cat <<'EOF'
-# Отключаем все типы авторизации, кроме публичных ключей
+PermitRootLogin no
 PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no
