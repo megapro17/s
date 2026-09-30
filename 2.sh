@@ -8,6 +8,7 @@ set -euo pipefail
 IS_TERMUX=false
 if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == *"/com.termux/"* ]]; then
     IS_TERMUX=true
+    echo "ℹ️ Обнаружен Termux, проверка прав отключена."
 fi
 
 if [[ "$IS_TERMUX" == true ]]; then
