@@ -1,138 +1,164 @@
 #!/bin/bash
-# bash <(curl -fsSL https://raw.githubusercontent.com/megapro17/s/refs/heads/master/2.sh)
 set -euo pipefail
+# bash <(curl -fsSL https://raw.githubusercontent.com/megapro17/s/refs/heads/master/2.sh)
 
-# ==========================================
-# 0. Окружение и пользователь
-# ==========================================
-IS_TERMUX=false
-if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == *"/com.termux/"* ]]; then
-    IS_TERMUX=true
-    echo "ℹ️ Обнаружен Termux, проверка прав отключена."
-fi
+main() {
+    # ==========================================
+    # 0. Окружение и пользователь
+    # ==========================================
+    local is_termux=false
+    if [[ -d "/data/data/com.termux" || "$(uname -o 2>/dev/null)" == "Android" || -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == *"/com.termux/"* ]]; then
+        is_termux=true
+        echo "ℹ️ Обнаружен Termux."
+    fi
 
-if [[ "$IS_TERMUX" == true ]]; then
-    TARGET_USER="$(id -un)"
-    TARGET_GROUP="$(id -gn)"
-    TARGET_HOME="${HOME:-/data/data/com.termux/files/home}"
-else
-    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-        TARGET_USER="$SUDO_USER"
+    local target_user target_group target_home
+    if [[ "$is_termux" == true ]]; then
+        target_user="$(id -un)"
+        target_group="$(id -gn)"
+        target_home="${HOME:-/data/data/com.termux/files/home}"
     else
-        TARGET_USER="$(id -un)"
+        if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+            target_user="$SUDO_USER"
+        else
+            target_user="$(id -un)"
+        fi
+
+        if command -v getent >/dev/null 2>&1; then
+            target_home="$(getent passwd "$target_user" | cut -d: -f6)"
+        else
+            target_home="${HOME:-}"
+        fi
+        target_group="$(id -gn "$target_user")"
     fi
 
-    if command -v getent >/dev/null 2>&1; then
-        TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    if [[ -z "$target_home" || ! -d "$target_home" ]]; then
+        echo "❌ Не удалось определить домашний каталог: $target_user" >&2
+        exit 1
+    fi
+
+    local ssh_dir="$target_home/.ssh"
+    local authorized_keys="$ssh_dir/authorized_keys"
+
+    # ==========================================
+    # Вспомогательные функции (без лишних записей на диск)
+    # ==========================================
+    apply_mode() {
+        local expected_mode="$1"
+        local path="$2"
+        local current_mode
+        current_mode="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Op' "$path" 2>/dev/null | tail -c 4 || true)"
+
+        if [[ "$current_mode" != "$expected_mode" ]]; then
+            chmod "$expected_mode" "$path"
+            echo "✅ Исправлены права ($expected_mode): $path"
+        fi
+    }
+
+    apply_owner() {
+        local expected_owner_group="$1"
+        local path="$2"
+
+        # В Termux или без root вызов chown пропускается
+        if [[ "$is_termux" == false && "$(id -u)" -eq 0 ]]; then
+            local current_owner_group
+            current_owner_group="$(stat -c '%U:%G' "$path" 2>/dev/null || true)"
+
+            if [[ "$current_owner_group" != "$expected_owner_group" ]]; then
+                chown "$expected_owner_group" "$path"
+                echo "✅ Исправлен владелец ($expected_owner_group): $path"
+            fi
+        fi
+    }
+
+    # ==========================================
+    # 1. Получаем ключи в оперативную память
+    # ==========================================
+    local keys
+    keys="$(curl -fsSL https://github.com/megapro17.keys)" || {
+        echo "❌ Ошибка: не удалось скачать ключи." >&2
+        exit 1
+    }
+
+    if [[ -z "$keys" ]]; then
+        echo "❌ Ошибка: GitHub вернул пустой список ключей." >&2
+        exit 1
+    fi
+
+    # ==========================================
+    # 2. Каталог ~/.ssh
+    # ==========================================
+    if [[ ! -d "$ssh_dir" ]]; then
+        mkdir -p "$ssh_dir"
+        echo "✅ Создан каталог $ssh_dir"
+    fi
+
+    apply_mode 700 "$ssh_dir"
+    apply_owner "$target_user:$target_group" "$ssh_dir"
+
+    # ==========================================
+    # 3. Файл authorized_keys
+    # ==========================================
+    local current_keys=""
+    if [[ -f "$authorized_keys" ]]; then
+        current_keys="$(cat "$authorized_keys")"
+    fi
+
+    if [[ "$current_keys" == "$keys" ]]; then
+        echo "ℹ️ Ключи не изменились."
     else
-        TARGET_HOME="${HOME:-}"
+        printf '%s\n' "$keys" > "$authorized_keys"
+        echo "✅ Ключи обновлены."
     fi
-    TARGET_GROUP="$(id -gn "$TARGET_USER")"
-fi
 
-if [[ -z "$TARGET_HOME" || ! -d "$TARGET_HOME" ]]; then
-    echo "❌ Не удалось определить домашний каталог: $TARGET_USER"
-    exit 1
-fi
+    apply_mode 600 "$authorized_keys"
+    apply_owner "$target_user:$target_group" "$authorized_keys"
 
-SSH_DIR="$TARGET_HOME/.ssh"
-AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
+    # ==========================================
+    # 4. Конфигурация SSH
+    # ==========================================
+    local sys_prefix="${PREFIX:-}"
+    local conf_dir="$sys_prefix/etc/ssh/sshd_config.d"
+    local conf_file="$conf_dir/01-keys-only.conf"
 
-# Функция безопасного chown (пропускается в Termux или без прав root)
-safe_chown() {
-    local owner_group="$1"
-    local file_path="$2"
-
-    if [[ "$IS_TERMUX" == false && "$(id -u)" -eq 0 ]]; then
-        chown "$owner_group" "$file_path"
-    fi
-}
-
-# ==========================================
-# 1. Получаем ключи в память
-# ==========================================
-KEYS="$(curl -fsSL https://github.com/megapro17.keys)" || {
-    echo "❌ Ошибка: не удалось скачать ключи."
-    exit 1
-}
-
-if [[ -z "$KEYS" ]]; then
-    echo "❌ Ошибка: GitHub вернул пустой список ключей."
-    exit 1
-fi
-
-# ==========================================
-# 2. Проверяем ~/.ssh
-# ==========================================
-if [[ ! -d "$SSH_DIR" ]]; then
-    mkdir -p "$SSH_DIR"
-    chmod 700 "$SSH_DIR"
-    safe_chown "$TARGET_USER:$TARGET_GROUP" "$SSH_DIR"
-    echo "✅ Создан каталог $SSH_DIR"
-else
-    SSH_MODE="$(stat -c '%a' "$SSH_DIR" 2>/dev/null || stat -f '%Op' "$SSH_DIR" | tail -c 4)"
-    if [[ "$SSH_MODE" != "700" ]]; then
-        chmod 700 "$SSH_DIR"
-        echo "✅ Исправлены права $SSH_DIR"
-    fi
-    safe_chown "$TARGET_USER:$TARGET_GROUP" "$SSH_DIR"
-fi
-
-# ==========================================
-# 3. Проверяем authorized_keys
-# ==========================================
-if [[ -f "$AUTHORIZED_KEYS" ]] && [[ "$(cat "$AUTHORIZED_KEYS")" == "$KEYS" ]]; then
-    echo "ℹ️ Ключи не изменились."
-else
-    printf '%s\n' "$KEYS" > "$AUTHORIZED_KEYS"
-    echo "✅ Ключи обновлены."
-fi
-
-AK_MODE="$(stat -c '%a' "$AUTHORIZED_KEYS" 2>/dev/null || stat -f '%Op' "$AUTHORIZED_KEYS" | tail -c 4)"
-if [[ "$AK_MODE" != "600" ]]; then
-    chmod 600 "$AUTHORIZED_KEYS"
-    echo "✅ Исправлены права authorized_keys"
-fi
-safe_chown "$TARGET_USER:$TARGET_GROUP" "$AUTHORIZED_KEYS"
-
-# ==========================================
-# 4. Настройка SSH
-# ==========================================
-SYS_PREFIX="${PREFIX:-}"
-CONF_DIR="$SYS_PREFIX/etc/ssh/sshd_config.d"
-CONF_FILE="$CONF_DIR/01-keys-only.conf"
-
-DESIRED_CONF=$(cat <<'EOF'
+    local desired_conf
+    desired_conf=$(cat <<'EOF'
 PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 AuthenticationMethods publickey
 EOF
-)
+    )
 
-# PermitRootLogin не имеет смысла внутри Termux, добавляем только на Linux
-if [[ "$IS_TERMUX" == false ]]; then
-    DESIRED_CONF="PermitRootLogin no"$'\n'"$DESIRED_CONF"
-fi
+    if [[ "$is_termux" == false ]]; then
+        desired_conf="PermitRootLogin no"$'\n'"$desired_conf"
+    fi
 
-mkdir -p "$CONF_DIR"
+    if [[ ! -d "$conf_dir" ]]; then
+        mkdir -p "$conf_dir"
+    fi
 
-CURRENT_CONF=""
-if [[ -f "$CONF_FILE" ]]; then
-    CURRENT_CONF="$(cat "$CONF_FILE")"
-fi
+    local current_conf=""
+    if [[ -f "$conf_file" ]]; then
+        current_conf="$(cat "$conf_file")"
+    fi
 
-if [[ "$DESIRED_CONF" != "$CURRENT_CONF" ]]; then
-    printf '%s\n' "$DESIRED_CONF" > "$CONF_FILE"
-    echo "✅ Конфигурация SSH обновлена."
-    echo "🔄 Перезапустите SSH сервер (в Termux: pkill sshd && sshd)."
-else
-    echo "ℹ️ Конфигурация SSH не изменилась."
-fi
+    if [[ "$desired_conf" != "$current_conf" ]]; then
+        printf '%s\n' "$desired_conf" > "$conf_file"
+        echo "✅ Конфигурация SSH обновлена."
+        if [[ "$is_termux" == true ]]; then
+            echo "🔄 Перезапустите SSH в Termux: pkill sshd && sshd"
+        else
+            echo "🔄 Перезапустите SSH сервер (например: systemctl restart ssh / sshd)."
+        fi
+    else
+        echo "ℹ️ Конфигурация SSH не изменилась."
+    fi
 
-chmod 600 "$CONF_FILE"
+    apply_mode 600 "$conf_file"
+    if [[ "$is_termux" == false ]]; then
+        apply_owner "root:root" "$conf_file"
+    fi
+}
 
-# В Termux владельцем конфига должен оставаться текущий UID, на Linux — root
-if [[ "$IS_TERMUX" == false ]]; then
-    safe_chown "root:root" "$CONF_FILE"
-fi
+main "$@"
