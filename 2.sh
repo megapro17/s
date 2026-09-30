@@ -1,5 +1,5 @@
 #!/bin/bash
-# bash <(curl -fsSL https://github.com/megapro17/s/raw/refs/heads/master/2.sh)
+# bash <(curl -fsSL https://raw.githubusercontent.com/megapro17/s/refs/heads/master/2.sh)
 set -euo pipefail
 
 # ==========================================
